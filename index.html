@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Silent Symptoms</title>
+<meta name="description" content="Détecteur de signaux faibles — journal quotidien de symptômes avec analyse IA bienveillante.">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0D1117">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Silent Symptoms">
+<meta name="mobile-web-app-capable" content="yes">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0D1117; color: #E8EAF0; font-family: 'Inter', system-ui, sans-serif; }
+  button { cursor: pointer; border: none; outline: none; font-family: inherit; }
+  textarea { outline: none; resize: none; font-family: inherit; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  .fade { animation: fadeIn 0.35s ease; }
+  .pulse { animation: pulse 1.8s infinite; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: #0D1117; }
+  ::-webkit-scrollbar-thumb { background: #1E2A35; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const { useState, useEffect } = React;
+
+// ⚠️ CONFIGURATION REQUISE AVANT MISE EN LIGNE ────────────────────────────
+// Cette app ne peut pas appeler l'API Anthropic directement depuis le
+// navigateur une fois hébergée hors de Claude : cela exposerait votre clé
+// API à tous les visiteurs. Il faut un petit serveur relais (proxy) qui
+// détient la clé et transmet la requête. Voir README.md pour un exemple
+// de proxy prêt à déployer (Vercel/Netlify function, ~15 lignes de code).
+// Remplacez la valeur ci-dessous par l'URL de votre proxy une fois déployé.
+const API_ENDPOINT = "/api/analyze";
+
+const SYMPTOMS = [
+  { id: "fatigue",       label: "Fatigue inhabituelle",         icon: "😴", color: "#6B7FD7" },
+  { id: "weightloss",   label: "Perte de poids",               icon: "⚖️", color: "#E07A5F" },
+  { id: "breathless",   label: "Essoufflement",                icon: "🫁", color: "#81B29A" },
+  { id: "sleep",        label: "Troubles du sommeil",          icon: "🌙", color: "#9B72CF" },
+  { id: "pain",         label: "Douleurs récurrentes",         icon: "⚡", color: "#F4A261" },
+  { id: "sweat",        label: "Sueurs nocturnes",             icon: "💧", color: "#457B9D" },
+  { id: "appetite",     label: "Perte d'appétit",              icon: "🍽️", color: "#E76F51" },
+  { id: "concentration",label: "Difficultés de concentration", icon: "🧠", color: "#2A9D8F" },
+];
+
+const INTENSITY = [
+  { value: 1, label: "Léger" },
+  { value: 2, label: "Modéré" },
+  { value: 3, label: "Intense" },
+];
+
+const formatDate = (d) => new Date(d).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
+
+function App() {
+  const [view, setView]                   = useState("home");
+  const [entries, setEntries]             = useState([]);
+  const [selectedSymptoms, setSelected]   = useState([]);
+  const [intensities, setIntensities]     = useState({});
+  const [note, setNote]                   = useState("");
+  const [analysis, setAnalysis]           = useState("");
+  const [loading, setLoading]             = useState(false);
+  const [saved, setSaved]                 = useState(false);
+  const [noSymptom, setNoSymptom]         = useState(false);
+  const [ready, setReady]                 = useState(false);
+
+  // Chargement initial des données depuis le stockage local du navigateur
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("ss_entries");
+      setEntries(raw ? JSON.parse(raw) : []);
+    } catch {
+      setEntries([]);
+    } finally {
+      setReady(true);
+    }
+  }, []);
+
+  // Sauvegarde à chaque modification (une fois le chargement initial terminé)
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      localStorage.setItem("ss_entries", JSON.stringify(entries));
+    } catch {
+      // silencieux : l'échec de sauvegarde ne doit pas bloquer l'interface
+    }
+  }, [entries, ready]);
+
+  const todayStr        = new Date().toISOString().split("T")[0];
+  const alreadyToday    = entries.some(e => e.date === todayStr);
+
+  const urgencyColor = () => {
+    if (entries.length < 3) return "#6B7FD7";
+    const recent = entries.slice(0, 7);
+    const total  = recent.reduce((a, e) => a + e.symptoms.length, 0);
+    if (total >= 10) return "#E07A5F";
+    if (total >= 5)  return "#F4A261";
+    return "#2A9D8F";
+  };
+
+  const toggleSymptom = (s) => {
+    setNoSymptom(false);
+    if (selectedSymptoms.find(x => x.id === s.id)) {
+      setSelected(selectedSymptoms.filter(x => x.id !== s.id));
+      const i = { ...intensities }; delete i[s.id]; setIntensities(i);
+    } else {
+      setSelected([...selectedSymptoms, s]);
+      setIntensities({ ...intensities, [s.id]: 2 });
+    }
+  };
+
+  const saveEntry = () => {
+    const entry = {
+      date: todayStr,
+      symptoms: noSymptom ? [] : selectedSymptoms.map(s => ({ ...s, intensity: intensities[s.id] || 2 })),
+      note,
+    };
+    setEntries([...entries.filter(e => e.date !== todayStr), entry].sort((a,b) => b.date.localeCompare(a.date)));
+    setSelected([]); setIntensities({}); setNote(""); setNoSymptom(false);
+    setSaved(true);
+    setTimeout(() => { setSaved(false); setView("home"); }, 1400);
+  };
+
+  const runAnalysis = async () => {
+    if (entries.length === 0) { setView("analysis"); return; }
+    setView("analysis"); setLoading(true); setAnalysis("");
+    const summary = entries.slice(0,14).map(e =>
+      `${e.date}: ${e.symptoms.length === 0 ? "aucun symptôme" : e.symptoms.map(s => `${s.label} (${s.intensity}/3)`).join(", ")}${e.note ? ` — note: "${e.note}"` : ""}`
+    ).join("\n");
+    try {
+      const res = await fetch(API_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          summary,
+          prompt: `Tu es un assistant de santé préventive. Voici le journal de symptômes :
+
+${summary}
+
+Analyse ces données. Identifie les tendances préoccupantes (symptômes répétés, combinaisons inhabituelles, aggravation). Rédige un message bienveillant, non alarmiste, en 3-4 phrases. Ne pose JAMAIS de diagnostic. Si moins de 3 entrées, encourage à continuer le suivi. Suggère de consulter un médecin si la situation le justifie, en utilisant "il pourrait être utile" plutôt que "vous devez".`,
+        }),
+      });
+      if (!res.ok) throw new Error("proxy not configured");
+      const data = await res.json();
+      setAnalysis(data.content?.[0]?.text || data.text || "Impossible d'analyser les données.");
+    } catch {
+      setAnalysis(
+        "L'analyse IA n'est pas encore disponible : le serveur relais qui protège votre clé API " +
+        "n'est pas configuré. Consultez le README.md fourni pour le mettre en place en quelques minutes. " +
+        "Votre journal de symptômes, lui, fonctionne normalement et vos données sont bien enregistrées."
+      );
+    }
+    setLoading(false);
+  };
+
+  const uc = urgencyColor();
+
+  // ── NAV ──────────────────────────────────────────────────────────────
+  const Nav = () => (
+    <div style={{ background:"#131920", borderBottom:"1px solid #1E2A35", padding:"14px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ width:34, height:34, borderRadius:10, background:"linear-gradient(135deg,#6B7FD7,#9B72CF)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>🔍</div>
+        <div>
+          <div style={{ fontWeight:800, fontSize:15, letterSpacing:"-0.4px" }}>Silent Symptoms</div>
+          <div style={{ fontSize:11, color:"#5A7080" }}>Détecteur de signaux faibles</div>
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:4 }}>
+        {[["home","🏠"],["log","✏️"],["history","📋"],["analysis","🤖"]].map(([v,ico]) => (
+          <button key={v} onClick={() => v==="analysis" ? runAnalysis() : setView(v)}
+            style={{ padding:"7px 11px", borderRadius:9, background: view===v ? "#1E2A35":"transparent", color: view===v ? "#E8EAF0":"#5A7080", fontSize:16, transition:"all 0.2s" }}
+            title={v==="home"?"Accueil":v==="log"?"Enregistrer":v==="history"?"Journal":"Analyse IA"}>
+            {ico}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ── HOME ─────────────────────────────────────────────────────────────
+  const Home = () => (
+    <div className="fade">
+      {/* hero card */}
+      <div style={{ background:"#131920", border:`1px solid ${uc}40`, borderRadius:18, padding:22, marginBottom:16, position:"relative", overflow:"hidden" }}>
+        <div style={{ position:"absolute", top:-20, right:-20, width:120, height:120, background:`radial-gradient(circle,${uc}25,transparent)`, borderRadius:"50%" }}/>
+        <div style={{ fontSize:11, color:uc, fontWeight:700, letterSpacing:"1px", marginBottom:6, textTransform:"uppercase" }}>Surveillance active</div>
+        <div style={{ fontSize:24, fontWeight:800, marginBottom:8, letterSpacing:"-0.5px" }}>
+          {entries.length === 0 ? "Bienvenue 👋" : `${entries.length} entrée${entries.length>1?"s":""} enregistrée${entries.length>1?"s":""}`}
+        </div>
+        <div style={{ fontSize:13, color:"#8899AA", lineHeight:1.6 }}>
+          {entries.length === 0
+            ? "Commencez à noter vos symptômes chaque jour. L'IA détectera les tendances inhabituelles au fil des semaines."
+            : alreadyToday
+              ? "✅ Vous avez déjà noté vos symptômes aujourd'hui. Revenez demain !"
+              : "Pensez à enregistrer vos symptômes d'aujourd'hui pour maintenir votre suivi."}
+        </div>
+      </div>
+
+      {/* quick stats */}
+      {entries.length > 0 && (() => {
+        const last7 = entries.slice(0,7);
+        const totalS = last7.reduce((a,e) => a+e.symptoms.length, 0);
+        const streak = (() => { let s=0; const today=new Date(); for(let i=0;i<entries.length;i++){ const d=new Date(today); d.setDate(d.getDate()-i); if(entries[i]&&entries[i].date===d.toISOString().split("T")[0]) s++; else break; } return s; })();
+        return (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:16 }}>
+            {[
+              { label:"Symptômes (7j)", val: totalS, color:"#6B7FD7" },
+              { label:"Jours suivis",   val: entries.length, color:"#2A9D8F" },
+              { label:"Jours consécutifs", val: streak, color:"#F4A261" },
+            ].map(({label,val,color}) => (
+              <div key={label} style={{ background:"#131920", borderRadius:12, padding:"14px 12px", textAlign:"center" }}>
+                <div style={{ fontSize:22, fontWeight:800, color }}>{val}</div>
+                <div style={{ fontSize:10, color:"#5A7080", marginTop:3, lineHeight:1.3 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* recent */}
+      {entries.length > 0 && (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ fontSize:11, color:"#5A7080", marginBottom:10, textTransform:"uppercase", letterSpacing:"0.8px", fontWeight:600 }}>Dernières entrées</div>
+          {entries.slice(0,5).map((e,i) => (
+            <div key={i} style={{ background:"#131920", borderRadius:12, padding:"12px 16px", marginBottom:8, display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ fontSize:12, color:"#5A7080", minWidth:60 }}>{formatDate(e.date)}</div>
+              <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+                {e.symptoms.length === 0
+                  ? <span style={{ fontSize:12, color:"#2A9D8F" }}>✓ Rien</span>
+                  : e.symptoms.map(s => <span key={s.id} style={{ fontSize:11, background:s.color+"20", color:s.color, padding:"2px 8px", borderRadius:20 }}>{s.icon}</span>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!alreadyToday && (
+        <button onClick={() => setView("log")} style={{ width:"100%", padding:"17px", borderRadius:16, background:"linear-gradient(135deg,#6B7FD7,#9B72CF)", color:"white", fontWeight:800, fontSize:15, letterSpacing:"-0.2px", boxShadow:"0 4px 20px #6B7FD740" }}>
+          + Enregistrer mes symptômes du jour
+        </button>
+      )}
+
+      {entries.length >= 3 && (
+        <button onClick={runAnalysis} style={{ width:"100%", padding:"14px", borderRadius:16, background:"#131920", border:"1.5px solid #1E2A35", color:"#9B72CF", fontWeight:700, fontSize:14, marginTop:10 }}>
+          🤖 Obtenir une analyse IA
+        </button>
+      )}
+    </div>
+  );
+
+  // ── LOG ──────────────────────────────────────────────────────────────
+  const Log = () => (
+    <div className="fade">
+      <div style={{ fontSize:20, fontWeight:800, marginBottom:4, letterSpacing:"-0.5px" }}>Comment vous sentez-vous ?</div>
+      <div style={{ fontSize:13, color:"#5A7080", marginBottom:22 }}>Aujourd'hui · {new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})}</div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+        {SYMPTOMS.map(s => {
+          const sel = !!selectedSymptoms.find(x => x.id === s.id);
+          return (
+            <button key={s.id} onClick={() => toggleSymptom(s)}
+              style={{ padding:"15px 12px", borderRadius:14, background: sel ? s.color+"18":"#131920", border:`1.5px solid ${sel ? s.color:"#1E2A35"}`, textAlign:"left", transition:"all 0.2s" }}>
+              <div style={{ fontSize:22, marginBottom:6 }}>{s.icon}</div>
+              <div style={{ fontSize:12, fontWeight:600, color: sel ? s.color:"#8899AA", lineHeight:1.3 }}>{s.label}</div>
+              {sel && (
+                <div style={{ display:"flex", gap:4, marginTop:10 }}>
+                  {INTENSITY.map(int => (
+                    <button key={int.value} onClick={e => { e.stopPropagation(); setIntensities({...intensities,[s.id]:int.value}); }}
+                      style={{ flex:1, padding:"4px 0", borderRadius:6, background: intensities[s.id]===int.value ? s.color:"#0D1117", border:`1px solid ${s.color}60`, color: intensities[s.id]===int.value ? "white":s.color, fontSize:10, fontWeight:700 }}>
+                      {int.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <button onClick={() => { setNoSymptom(!noSymptom); setSelected([]); setIntensities({}); }}
+        style={{ width:"100%", padding:"13px", borderRadius:12, background: noSymptom ? "#0D1117":"#131920", border:`1.5px solid ${noSymptom?"#2A9D8F":"#1E2A35"}`, color: noSymptom?"#2A9D8F":"#5A7080", fontWeight:700, fontSize:13, marginBottom:14 }}>
+        {noSymptom ? "✅ Aucun symptôme aujourd'hui" : "Je n'ai aucun symptôme aujourd'hui"}
+      </button>
+
+      <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Note optionnelle (ex: douleur au côté droit, stress au travail…)"
+        style={{ width:"100%", padding:"14px", borderRadius:12, background:"#131920", border:"1.5px solid #1E2A35", color:"#E8EAF0", fontSize:13, lineHeight:1.7, height:88, marginBottom:16 }}/>
+
+      <button onClick={saveEntry} disabled={selectedSymptoms.length===0 && !noSymptom}
+        style={{ width:"100%", padding:"17px", borderRadius:16, background: saved ? "#2A9D8F" : (selectedSymptoms.length>0||noSymptom) ? "linear-gradient(135deg,#6B7FD7,#9B72CF)":"#1E2A35", color: (selectedSymptoms.length>0||noSymptom||saved) ? "white":"#5A7080", fontWeight:800, fontSize:15, transition:"all 0.3s", boxShadow: (selectedSymptoms.length>0||noSymptom) ? "0 4px 20px #6B7FD740":"none" }}>
+        {saved ? "✅ Enregistré avec succès !" : "Sauvegarder"}
+      </button>
+    </div>
+  );
+
+  // ── HISTORY ──────────────────────────────────────────────────────────
+  const History = () => (
+    <div className="fade">
+      <div style={{ fontSize:20, fontWeight:800, marginBottom:4, letterSpacing:"-0.5px" }}>Journal de santé</div>
+      <div style={{ fontSize:13, color:"#5A7080", marginBottom:20 }}>{entries.length} entrée{entries.length!==1?"s":""} enregistrée{entries.length!==1?"s":""}</div>
+
+      {entries.length === 0 ? (
+        <div style={{ textAlign:"center", padding:"60px 20px", color:"#5A7080" }}>
+          <div style={{ fontSize:48, marginBottom:14 }}>📋</div>
+          <div style={{ fontWeight:600, marginBottom:8 }}>Aucune donnée encore</div>
+          <div style={{ fontSize:13, lineHeight:1.6 }}>Commencez à enregistrer vos symptômes quotidiennement pour construire votre journal de santé.</div>
+          <button onClick={() => setView("log")} style={{ marginTop:20, padding:"12px 24px", borderRadius:12, background:"linear-gradient(135deg,#6B7FD7,#9B72CF)", color:"white", fontWeight:700, fontSize:13 }}>
+            Première entrée →
+          </button>
+        </div>
+      ) : entries.map((e,i) => (
+        <div key={i} className="fade" style={{ background:"#131920", borderRadius:14, padding:"16px", marginBottom:10, borderLeft:`3px solid ${e.symptoms.length===0?"#2A9D8F":e.symptoms.length>=3?"#E07A5F":"#F4A261"}` }}>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:10 }}>{formatDate(e.date)}</div>
+          {e.symptoms.length === 0
+            ? <div style={{ fontSize:13, color:"#2A9D8F" }}>✓ Aucun symptôme ce jour</div>
+            : <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                {e.symptoms.map(s => (
+                  <span key={s.id} style={{ fontSize:12, background:s.color+"20", color:s.color, padding:"5px 11px", borderRadius:20, display:"flex", alignItems:"center", gap:4 }}>
+                    {s.icon} {s.label}
+                    <span style={{ opacity:0.6 }}>·</span>
+                    {"●".repeat(s.intensity)}{"○".repeat(3-s.intensity)}
+                  </span>
+                ))}
+              </div>}
+          {e.note && <div style={{ fontSize:12, color:"#8899AA", fontStyle:"italic", marginTop:10, paddingTop:10, borderTop:"1px solid #1E2A35" }}>💬 {e.note}</div>}
+        </div>
+      ))}
+    </div>
+  );
+
+  // ── ANALYSIS ─────────────────────────────────────────────────────────
+  const Analysis = () => (
+    <div className="fade">
+      <div style={{ fontSize:20, fontWeight:800, marginBottom:4, letterSpacing:"-0.5px" }}>Analyse IA</div>
+      <div style={{ fontSize:13, color:"#5A7080", marginBottom:20 }}>Basée sur vos {Math.min(entries.length,14)} dernières entrées</div>
+
+      {entries.length === 0 ? (
+        <div style={{ background:"#131920", borderRadius:16, padding:30, textAlign:"center", color:"#5A7080" }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>🤖</div>
+          <div style={{ fontWeight:600, marginBottom:8 }}>Pas encore assez de données</div>
+          <div style={{ fontSize:13, lineHeight:1.6 }}>Enregistrez au moins 1 entrée pour obtenir une analyse.</div>
+          <button onClick={() => setView("log")} style={{ marginTop:16, padding:"12px 24px", borderRadius:12, background:"linear-gradient(135deg,#6B7FD7,#9B72CF)", color:"white", fontWeight:700, fontSize:13 }}>
+            Enregistrer mes symptômes →
+          </button>
+        </div>
+      ) : (
+        <>
+          <div style={{ background:"#131920", borderRadius:16, padding:22, border:"1px solid #1E2A35", minHeight:180 }}>
+            {loading ? (
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:140, gap:14 }}>
+                <div className="pulse" style={{ fontSize:38 }}>🔍</div>
+                <div style={{ fontSize:13, color:"#5A7080" }}>Analyse de vos symptômes en cours…</div>
+              </div>
+            ) : analysis ? (
+              <>
+                <div style={{ fontSize:11, color:"#6B7FD7", marginBottom:14, fontWeight:700, textTransform:"uppercase", letterSpacing:"1px" }}>Résultat de l'analyse</div>
+                <div style={{ fontSize:14, lineHeight:1.8, color:"#C8D0DA" }}>{analysis}</div>
+                <div style={{ marginTop:18, padding:"13px 15px", borderRadius:10, background:"#0D1117", fontSize:12, color:"#5A7080", lineHeight:1.6 }}>
+                  ⚠️ Silent Symptoms ne remplace pas un avis médical. En cas de doute, consultez votre médecin.
+                </div>
+              </>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:140, gap:14 }}>
+                <div style={{ fontSize:38 }}>💡</div>
+                <div style={{ fontSize:13, color:"#5A7080", textAlign:"center" }}>Cliquez sur le bouton ci-dessous pour analyser vos données</div>
+              </div>
+            )}
+          </div>
+
+          {!loading && (
+            <button onClick={runAnalysis} style={{ width:"100%", padding:"16px", borderRadius:16, background:"linear-gradient(135deg,#6B7FD7,#9B72CF)", color:"white", fontWeight:800, fontSize:14, marginTop:14, boxShadow:"0 4px 20px #6B7FD740" }}>
+              {analysis ? "🔄 Relancer l'analyse" : "🤖 Lancer l'analyse IA"}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  if (!ready) {
+    return (
+      <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:14 }}>
+        <div className="pulse" style={{ fontSize:38 }}>🔍</div>
+        <div style={{ fontSize:13, color:"#5A7080" }}>Chargement de votre journal…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight:"100vh" }}>
+      <Nav/>
+      <div style={{ maxWidth:520, margin:"0 auto", padding:"22px 16px 40px" }}>
+        {view==="home"     && <Home/>}
+        {view==="log"      && <Log/>}
+        {view==="history"  && <History/>}
+        {view==="analysis" && <Analysis/>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("service-worker.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
